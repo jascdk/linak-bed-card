@@ -17,7 +17,7 @@
  *     ...
  */
 
-const VERSION = "1.0.0";
+const VERSION = "1.0.1";
 
 const DEFAULT_ENTITIES = {
   back_cover: "cover.{p}_head",
@@ -48,6 +48,12 @@ class LinakBedCard extends HTMLElement {
     if (!config.prefix && !config.entities) {
       throw new Error("Set `prefix` (e.g. jacob_seng) or an `entities` map");
     }
+    // Home Assistant may call setConfig again with the same config;
+    // only rebuild when it actually changed (avoids flicker).
+    const cfgKey = JSON.stringify(config);
+    if (this._cfgKey === cfgKey && this._built) return;
+    this._cfgKey = cfgKey;
+    this._last = null;
     this._config = config;
     const p = config.prefix || "";
     this._ent = {};
@@ -207,6 +213,17 @@ class LinakBedCard extends HTMLElement {
   _update() {
     if (!this._built || !this._hass) return;
     const e = this._el;
+
+    // Home Assistant calls `hass` on every state change in the whole system.
+    // Skip the redraw unless one of this card's entities actually changed.
+    const sig = Object.values(this._ent)
+      .map((id) => {
+        const s = this._hass.states[id];
+        return s ? s.state : "";
+      })
+      .join("|");
+    if (sig === this._last) return;
+    this._last = sig;
 
     const back = Math.max(0, Math.min(BACK_MAX, this._num("back_angle")));
     const legs = Math.max(0, Math.min(LEGS_MAX, this._num("legs_angle")));
