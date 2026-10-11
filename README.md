@@ -34,48 +34,33 @@ A Home Assistant dashboard card for LINAK adjustable beds controlled over Blueto
 
 ## Usage
 
-```yaml
-type: custom:linak-bed-card
-name: Jacob
-prefix: jacob_seng
-```
+1. Edit your dashboard and click **Add card**.
+2. Search for **LINAK Bed Card**.
+3. In the editor, choose the bed under **Seng (enhed)**.
 
-`prefix` is the start of the bed's entity IDs. With `prefix: jacob_seng`, the card uses:
+That's it. The card finds the bed's entities on the device by itself, whatever the entity IDs are called, and reads the preset names from the bed's preset select.
 
-| Key          | Default entity                              |
-| ------------ | ------------------------------------------- |
-| `back_cover` | `cover.jacob_seng_head`                     |
-| `legs_cover` | `cover.jacob_seng_legs`                     |
-| `both_cover` | `cover.jacob_seng_hoved_fod`                |
-| `back_angle` | `sensor.jacob_seng_ryg_hojde`               |
-| `legs_angle` | `sensor.jacob_seng_ben_hojde`               |
-| `light`      | `switch.jacob_seng_lys`                     |
-| `connection` | `binary_sensor.jacob_seng_forbindelse_status` |
-| `problem`    | `binary_sensor.jacob_seng_bluetooth_svarer_ikke` |
-| `preset`     | `select.jacob_seng_preset_mode`             |
-| `stop`       | `button.jacob_seng_stop`                    |
+Under **Avanceret: vælg entiteter manuelt** you can pick any entity by hand, if one isn't found automatically.
 
-If any of your entity IDs differ, override them:
+### YAML
+
+The editor writes YAML like this:
 
 ```yaml
 type: custom:linak-bed-card
 name: Jacob
-prefix: jacob_seng
-entities:
-  back_angle: sensor.my_back_angle
-  light: switch.my_bed_light
+device: 0123456789abcdef0123456789abcdef
 ```
 
-### Options
+| Option     | Description                                                                 |
+| ---------- | --------------------------------------------------------------------------- |
+| `device`   | The bed's device ID. Entities are found on it automatically (recommended).  |
+| `name`     | Title shown on the card. Defaults to the device name.                       |
+| `entities` | Override individual entities (see below).                                   |
+| `presets`  | Preset names. Default: the options of the bed's preset select.              |
+| `prefix`   | Older alternative to `device`: entity ID prefix, e.g. `jacob_seng`.         |
 
-| Option     | Required | Description                                                      |
-| ---------- | -------- | ---------------------------------------------------------------- |
-| `prefix`   | Yes*     | Entity ID prefix. *Not needed if all entities are set.           |
-| `name`     | No       | Title shown on the card. Default: `Seng`.                        |
-| `entities` | No       | Override individual entity IDs (see table above).                |
-| `presets`  | No       | List of preset names. Default: `[Flad, Sove, TV, Helt Oppe]`.    |
-
-The preset names must match the options of the preset select entity.
+Keys for `entities`: `back_cover`, `legs_cover`, `both_cover`, `back_angle`, `legs_angle`, `light`, `connection`, `problem`, `preset`, `stop`.
 
 ## ESPHome
 

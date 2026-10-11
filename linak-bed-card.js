@@ -6,18 +6,49 @@
  *   1. Copy this file to /config/www/linak-bed-card.js
  *   2. Settings -> Dashboards -> (⋮) Resources -> Add resource
  *        URL: /local/linak-bed-card.js   Type: JavaScript module
- *   3. Add a card (Manual):
- *        type: custom:linak-bed-card
- *        name: Jacob
- *        prefix: jacob_seng
+ *   3. Add the card from the card picker ("LINAK Bed Card") and choose the bed
+ *      in the visual editor. Entities are found automatically from the device.
  *
- * All entity IDs are derived from `prefix`, but each can be overridden:
- *   entities:
- *     back_cover: cover.jacob_seng_head
- *     ...
+ * YAML is still supported:
+ *   type: custom:linak-bed-card
+ *   name: Jacob
+ *   device: <device_id>        # picked in the editor (recommended)
+ *   prefix: jacob_seng         # alternative to device
+ *   entities:                  # optional per-entity overrides
+ *     light: switch.my_light
  */
 
-const VERSION = "1.0.2";
+const VERSION = "1.1.0";
+
+// Entity ID patterns used to find each entity on the chosen device.
+// They only look at the END of the entity ID, so long device names don't matter.
+const MATCHERS = {
+  back_cover: /^cover\..*_head$/,
+  legs_cover: /^cover\..*_legs$/,
+  both_cover: /^cover\..*_hoved_fod$/,
+  back_angle: /^sensor\..*ryg_h(o|_)?jde$/,
+  legs_angle: /^sensor\..*ben_h(o|_)?jde$/,
+  light: /^switch\..*_lys$/,
+  connection: /^binary_sensor\..*_forbindelse_status$/,
+  problem: /^binary_sensor\..*_bluetooth_svarer_ikke$/,
+  preset: /^select\..*_preset_mode$/,
+  stop: /^button\..*_stop$/,
+};
+
+const ENTITY_LABELS = {
+  back_cover: "Ryg (cover)",
+  legs_cover: "Ben (cover)",
+  both_cover: "Begge (cover)",
+  back_angle: "Ryg vinkel (sensor)",
+  legs_angle: "Ben vinkel (sensor)",
+  light: "Lys (switch)",
+  connection: "Forbindelse (binary_sensor)",
+  problem: "Bluetooth svarer ikke (binary_sensor)",
+  preset: "Preset (select)",
+  stop: "Stop (button)",
+};
+
+const DEFAULT_PRESETS = ["Flad", "Sove", "TV", "Helt Oppe"];
 
 const DEFAULT_ENTITIES = {
   back_cover: "cover.{p}_head",
@@ -45,28 +76,25 @@ const ICONS = {
 
 class LinakBedCard extends HTMLElement {
   setConfig(config) {
-    if (!config.prefix && !config.entities) {
-      throw new Error("Set `prefix` (e.g. jacob_seng) or an `entities` map");
-    }
+    if (!config) throw new Error("Invalid configuration");
     // Home Assistant may call setConfig again with the same config;
     // only rebuild when it actually changed (avoids flicker).
     const cfgKey = JSON.stringify(config);
     if (this._cfgKey === cfgKey && this._built) return;
     this._cfgKey = cfgKey;
-    this._last = null;
     this._config = config;
-    const p = config.prefix || "";
-    this._ent = {};
-    for (const [k, v] of Object.entries(DEFAULT_ENTITIES)) {
-      this._ent[k] = (config.entities && config.entities[k]) || v.replace("{p}", p);
-    }
-    this._presets = config.presets || ["Flad", "Sove", "TV", "Helt Oppe"];
+    this._entKey = null;
+    this._regRef = null;
+    this._last = null;
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
     this._built = false;
+    if (this._hass) this.hass = this._hass;
   }
 
   set hass(hass) {
     this._hass = hass;
+    if (!this._config) return;
+    this._resolve();
     if (!this._built) this._build();
     this._update();
   }
@@ -75,13 +103,64 @@ class LinakBedCard extends HTMLElement {
     return 6;
   }
 
-  static getStubConfig() {
-    return { name: "Seng", prefix: "jacob_seng" };
+  static getConfigElement() {
+    return document.createElement("linak-bed-card-editor");
+  }
+
+  static getStubConfig(hass) {
+    // Pre-select the first device that looks like a LINAK bed.
+    const reg = (hass && hass.entities) || {};
+    for (const [id, e] of Object.entries(reg)) {
+      if (MATCHERS.legs_cover.test(id) && e.device_id) {
+        const dev = hass.devices && hass.devices[e.device_id];
+        return { name: (dev && (dev.name_by_user || dev.name)) || "Seng", device: e.device_id };
+      }
+    }
+    return { name: "Seng" };
+  }
+
+  // Work out which entity to use for each role:
+  // explicit `entities` override > entity on the chosen device > `prefix` guess.
+  _resolve() {
+    const cfg = this._config;
+    const reg = this._hass.entities;
+    if (reg === this._regRef && this._ent) return;
+    this._regRef = reg;
+
+    const ent = {};
+    const onDevice = cfg.device && reg
+      ? Object.keys(reg).filter((id) => reg[id].device_id === cfg.device)
+      : [];
+    for (const key of Object.keys(MATCHERS)) {
+      const override = cfg.entities && cfg.entities[key];
+      const fromDevice = onDevice.find((id) => MATCHERS[key].test(id));
+      const fromPrefix = cfg.prefix ? DEFAULT_ENTITIES[key].replace("{p}", cfg.prefix) : null;
+      ent[key] = override || fromDevice || fromPrefix || "";
+    }
+    const key = JSON.stringify(ent);
+    if (key !== this._entKey) {
+      this._entKey = key;
+      this._ent = ent;
+      this._last = null;
+    }
+  }
+
+  _configured() {
+    return Object.values(this._ent || {}).some((id) => id && this._hass.states[id]);
   }
 
   // ---------------------------------------------------------------- helpers
   _st(key) {
-    return this._hass && this._hass.states[this._ent[key]];
+    return this._hass && this._ent && this._ent[key] ? this._hass.states[this._ent[key]] : undefined;
+  }
+  _presetList() {
+    if (this._config.presets) return this._config.presets;
+    const sel = this._st("preset");
+    const opts = sel && sel.attributes && sel.attributes.options;
+    return Array.isArray(opts) && opts.length ? opts : DEFAULT_PRESETS;
+  }
+  _esc(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   }
   _num(key) {
     const s = this._st(key);
@@ -89,7 +168,7 @@ class LinakBedCard extends HTMLElement {
     return isNaN(v) ? 0 : v;
   }
   _call(domain, service, key, extra = {}) {
-    if (!this._hass) return;
+    if (!this._hass || !this._ent[key]) return;
     this._hass.callService(domain, service, { entity_id: this._ent[key], ...extra });
     if (navigator.vibrate) navigator.vibrate(15);
   }
@@ -99,7 +178,17 @@ class LinakBedCard extends HTMLElement {
 
   // ------------------------------------------------------------------ build
   _build() {
-    const name = this._config.name || "Seng";
+    const name = this._esc(this._config.name || "Seng");
+    if (!this._configured()) {
+      this.shadowRoot.innerHTML = `
+        <style>${LinakBedCard.styles}</style>
+        <ha-card><div class="wrap empty">
+          <div class="name">${name}</div>
+          <div class="sub">Vælg sengen i kortets editor (blyant-ikonet), så findes alle entiteter automatisk.</div>
+        </div></ha-card>`;
+      this._built = "empty";
+      return;
+    }
     this.shadowRoot.innerHTML = `
       <style>${LinakBedCard.styles}</style>
       <ha-card>
@@ -149,9 +238,7 @@ class LinakBedCard extends HTMLElement {
             ${this._ctrlGroup("legs", "Ben")}
           </div>
 
-          <div class="presets" id="presets">
-            ${this._presets.map((p) => `<button class="preset" data-p="${p}">${p}</button>`).join("")}
-          </div>
+          <div class="presets" id="presets"></div>
 
           <div class="bottom">
             <button class="light" id="light">${this._icon(ICONS.bulb)}<span id="lightTxt">Lys</span></button>
@@ -177,9 +264,12 @@ class LinakBedCard extends HTMLElement {
         this._call("cover", svc, key);
       })
     );
-    this.shadowRoot.querySelectorAll(".preset").forEach((b) =>
-      b.addEventListener("click", () => this._call("select", "select_option", "preset", { option: b.dataset.p }))
-    );
+    // One listener for all preset buttons (the list can change at runtime)
+    this._el.presets.addEventListener("click", (ev) => {
+      const b = ev.target.closest(".preset");
+      if (b) this._call("select", "select_option", "preset", { option: b.dataset.p });
+    });
+    this._presetKey = null;
     this._el.light.addEventListener("click", () => this._call("switch", "toggle", "light"));
     $("#stopall").addEventListener("click", () => this._call("button", "press", "stop"));
 
@@ -199,16 +289,24 @@ class LinakBedCard extends HTMLElement {
   // ----------------------------------------------------------------- update
   _update() {
     if (!this._built || !this._hass) return;
+    // Entities appeared (or vanished): switch between placeholder and full card
+    if ((this._built === "empty") === this._configured()) {
+      this._built = false;
+      this._build();
+      this._last = null;
+    }
+    if (this._built === "empty") return; // placeholder shown, nothing to update
     const e = this._el;
 
     // Home Assistant calls `hass` on every state change in the whole system.
     // Skip the redraw unless one of this card's entities actually changed.
+    const sel = this._st("preset");
     const sig = Object.values(this._ent)
       .map((id) => {
-        const s = this._hass.states[id];
+        const s = id && this._hass.states[id];
         return s ? s.state : "";
       })
-      .join("|");
+      .join("|") + "|" + JSON.stringify((sel && sel.attributes && sel.attributes.options) || []);
     if (sig === this._last) return;
     this._last = sig;
 
@@ -235,6 +333,15 @@ class LinakBedCard extends HTMLElement {
     e.light.classList.toggle("on", lightOn);
     e.lightTxt.textContent = lightOn ? "Lys tændt" : "Lys slukket";
 
+    const presets = this._presetList();
+    const pKey = presets.join("|");
+    if (pKey !== this._presetKey) {
+      this._presetKey = pKey;
+      e.presets.innerHTML = presets
+        .map((p) => `<button class="preset" data-p="${this._esc(p)}">${this._esc(p)}</button>`)
+        .join("");
+    }
+
     const preset = this._st("preset");
     const cur = preset ? preset.state : null;
     e.presets.querySelectorAll(".preset").forEach((b) => b.classList.toggle("active", b.dataset.p === cur));
@@ -257,6 +364,9 @@ LinakBedCard.styles = `
   ha-card { overflow: hidden; transition: opacity .3s; }
   ha-card.offline .controls, ha-card.offline .presets { opacity: .45; }
   .wrap { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+  .wrap.empty { gap: 6px; }
+  .wrap.empty .name { font-size: 1.15rem; font-weight: 600; color: var(--primary-text-color); }
+  .wrap.empty .sub { font-size: .9rem; color: var(--secondary-text-color); }
 
   header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .title { display: flex; flex-direction: column; min-width: 0; }
@@ -331,12 +441,113 @@ LinakBedCard.styles = `
 
 customElements.define("linak-bed-card", LinakBedCard);
 
+// ====================================================================== editor
+class LinakBedCardEditor extends HTMLElement {
+  setConfig(config) {
+    this._config = { ...config };
+    this._update();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    this._update();
+  }
+
+  // ha-form is only loaded once the user has opened a built-in card editor.
+  // Loading an entities card's editor makes sure it is available.
+  _ensureForm() {
+    if (customElements.get("ha-form")) return Promise.resolve();
+    if (!this._loading) {
+      this._loading = (async () => {
+        try {
+          const helpers = await window.loadCardHelpers();
+          const card = await helpers.createCardElement({ type: "entities", entities: [] });
+          if (card && card.constructor.getConfigElement) await card.constructor.getConfigElement();
+        } catch (e) {
+          /* ignore */
+        }
+        await customElements.whenDefined("ha-form");
+      })();
+    }
+    return this._loading;
+  }
+
+  _schema() {
+    return [
+      { name: "device", selector: { device: { filter: { integration: "esphome" } } } },
+      { name: "name", selector: { text: {} } },
+      {
+        type: "expandable",
+        name: "entities",
+        title: "Avanceret: vælg entiteter manuelt",
+        schema: Object.keys(MATCHERS).map((k) => ({
+          name: k,
+          selector: { entity: { domain: MATCHERS[k].source.slice(1).split("\\.")[0] } },
+        })),
+      },
+    ];
+  }
+
+  _label = (s) =>
+    ({ device: "Seng (enhed)", name: "Navn på kortet" }[s.name] || ENTITY_LABELS[s.name] || s.name);
+
+  _helper = (s) =>
+    s.name === "device"
+      ? "Vælg sengens ESPHome-enhed. Alle entiteter findes automatisk."
+      : undefined;
+
+  async _update() {
+    if (!this._hass || !this._config) return;
+    if (!this._form) {
+      await this._ensureForm();
+      if (this._form) return this._update();
+      this._form = document.createElement("ha-form");
+      this._form.computeLabel = this._label;
+      this._form.computeHelper = this._helper;
+      this._form.addEventListener("value-changed", (ev) => this._changed(ev));
+      this.appendChild(this._form);
+    }
+    this._form.hass = this._hass;
+    this._form.schema = this._schema();
+    this._form.data = { ...this._config, entities: { ...(this._config.entities || {}) } };
+  }
+
+  _changed(ev) {
+    ev.stopPropagation();
+    const v = ev.detail.value || {};
+    const cfg = { ...this._config, ...v };
+
+    // When a new bed is picked and the name is empty or still the old bed's name, use the device name.
+    if (v.device && v.device !== this._config.device) {
+      const dev = this._hass.devices && this._hass.devices[v.device];
+      const devName = dev && (dev.name_by_user || dev.name);
+      const oldDev = this._config.device && this._hass.devices && this._hass.devices[this._config.device];
+      const oldName = oldDev && (oldDev.name_by_user || oldDev.name);
+      if (devName && (!cfg.name || cfg.name === "Seng" || cfg.name === oldName)) cfg.name = devName;
+      delete cfg.prefix; // device lookup replaces the old prefix guess
+    }
+
+    // Drop empty overrides so the config stays tidy
+    const ents = {};
+    for (const [k, id] of Object.entries(cfg.entities || {})) if (id) ents[k] = id;
+    if (Object.keys(ents).length) cfg.entities = ents;
+    else delete cfg.entities;
+    if (!cfg.device) delete cfg.device;
+
+    this._config = cfg;
+    this.dispatchEvent(new CustomEvent("config-changed", { detail: { config: cfg }, bubbles: true, composed: true }));
+  }
+}
+
+customElements.define("linak-bed-card-editor", LinakBedCardEditor);
+
+
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: "linak-bed-card",
   name: "LINAK Bed Card",
   description: "Live bed drawing, motor controls, presets and light for ESPHome LINAK beds.",
-  preview: false,
+  preview: true,
 });
 
 console.info(`%c LINAK-BED-CARD %c v${VERSION} `, "background:#7aa7ff;color:#fff;border-radius:3px 0 0 3px", "background:#333;color:#fff;border-radius:0 3px 3px 0");
