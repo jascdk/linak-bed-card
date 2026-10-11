@@ -14,7 +14,11 @@ A Home Assistant dashboard card for LINAK adjustable beds controlled over Blueto
 - **Up / stop / down** for back, legs and both.
 - **Preset buttons**, with the active preset highlighted.
 - **Big stop button.**
-- Follows your Home Assistant theme (light and dark).
+- Follows your Home Assistant theme (light and dark), using theme variables for colours.
+- Shows the active preset and clear loading / incomplete / unavailable states.
+- Controls whose entities are missing or unavailable are disabled (or hidden), instead of being dead buttons.
+- Accessible: labelled buttons, keyboard focus styles and arrow-key navigation between presets.
+- Danish and English texts (follows your Home Assistant language).
 
 ## Installation
 
@@ -59,8 +63,43 @@ device: 0123456789abcdef0123456789abcdef
 | `entities` | Override individual entities (see below).                                   |
 | `presets`  | Preset names. Default: the options of the bed's preset select.              |
 | `prefix`   | Older alternative to `device`: entity ID prefix, e.g. `jacob_seng`.         |
+| `language` | `da` or `en`. Default: your Home Assistant language (English if unsupported). |
 
 Keys for `entities`: `back_cover`, `legs_cover`, `both_cover`, `back_angle`, `legs_angle`, `light`, `connection`, `problem`, `preset`, `stop`.
+
+### Manual configuration (fallback)
+
+If your entities are named differently, list them yourself. Anything you set under `entities` wins over automatic detection, and you can mix both:
+
+```yaml
+type: custom:linak-bed-card
+name: Bed
+device: 0123456789abcdef0123456789abcdef # optional
+entities:
+  back_cover: cover.my_bed_back
+  legs_cover: cover.my_bed_legs
+  both_cover: cover.my_bed_both
+  back_angle: sensor.my_bed_back_angle
+  legs_angle: sensor.my_bed_legs_angle
+  light: switch.my_bed_light
+  connection: binary_sensor.my_bed_connected
+  preset: select.my_bed_preset
+  stop: button.my_bed_stop
+presets: [Flat, Sleep, TV, Up]
+```
+
+### How entities are detected
+
+With `device` set, the card looks at the entities of that device and matches the **end** of each entity ID (for example `cover.*_head`, `cover.*_legs`, `sensor.*_ryg_hojde`, `switch.*_lys` or `switch.*_light`). Both the Danish names from the ESPHome config and common English names are recognised.
+
+## Troubleshooting
+
+- **"Waiting for Home Assistant…"** – Home Assistant has not delivered its states yet. It should clear by itself; refresh the browser if it does not.
+- **"Pick the bed in the card editor"** – no `device`, `prefix` or `entities` is configured.
+- **"No entities were found for this bed"** – the chosen device has no entities matching the known names. Check that you picked the ESPHome device of the bed, or set the entities under `entities`.
+- **A "Missing: …" note under the title** – the bed was found, but those entities were not. Their controls are disabled (the light button and presets are hidden). Add them under `entities` if they are named differently.
+- **An "Unavailable: …" note** – the entity exists but Home Assistant reports it as unavailable (usually the ESPHome device is offline). Its controls are disabled until it returns.
+- **Wrong labels or language** – set `language: en` or `language: da`.
 
 ## ESPHome
 

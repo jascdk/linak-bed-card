@@ -14,54 +14,93 @@
  *   name: Jacob
  *   device: <device_id>        # picked in the editor (recommended)
  *   prefix: jacob_seng         # alternative to device
+ *   language: en               # optional: da | en (default: HA user language)
  *   entities:                  # optional per-entity overrides
  *     light: switch.my_light
  */
 
 const VERSION = "1.1.0";
 
-// Entity ID patterns used to find each entity on the chosen device.
-// They only look at the END of the entity ID, so long device names don't matter.
+// How to find each entity. `domain` is used by the editor's entity picker and
+// by the matching; `patterns` are tried against the object id (the part after
+// the dot), so long device names don't matter. `suffix` builds the `prefix`
+// fallback (<domain>.<prefix>_<suffix>). Patterns cover the Danish ESPHome
+// config and common English names; use `entities:` for anything else.
 const MATCHERS = {
-  back_cover: /^cover\..*_head$/,
-  legs_cover: /^cover\..*_legs$/,
-  both_cover: /^cover\..*_hoved_fod$/,
-  back_angle: /^sensor\..*ryg_h(o|_)?jde$/,
-  legs_angle: /^sensor\..*ben_h(o|_)?jde$/,
-  light: /^switch\..*_lys$/,
-  connection: /^binary_sensor\..*_forbindelse_status$/,
-  problem: /^binary_sensor\..*_bluetooth_svarer_ikke$/,
-  preset: /^select\..*_preset_mode$/,
-  stop: /^button\..*_stop$/,
+  back_cover: { domain: "cover", suffix: "head", patterns: [/_head$/, /_back$/] },
+  legs_cover: { domain: "cover", suffix: "legs", patterns: [/_legs$/, /_feet$/] },
+  both_cover: { domain: "cover", suffix: "hoved_fod", patterns: [/_hoved_fod$/, /_both$/, /_head_and_feet$/] },
+  back_angle: { domain: "sensor", suffix: "ryg_hojde", patterns: [/ryg_h(o|_)?jde$/, /_back_(angle|height)$/, /_head_(angle|height)$/] },
+  legs_angle: { domain: "sensor", suffix: "ben_hojde", patterns: [/ben_h(o|_)?jde$/, /_legs_(angle|height)$/, /_feet_(angle|height)$/] },
+  light: { domain: "switch", suffix: "lys", patterns: [/_lys$/, /_(under_?bed_)?light$/] },
+  connection: { domain: "binary_sensor", suffix: "forbindelse_status", patterns: [/_forbindelse_status$/, /_connection(_status)?$/, /_connected$/] },
+  problem: { domain: "binary_sensor", suffix: "bluetooth_svarer_ikke", patterns: [/_bluetooth_svarer_ikke$/, /_bluetooth_(not_responding|unresponsive)$/] },
+  preset: { domain: "select", suffix: "preset_mode", patterns: [/_preset_mode$/, /_preset$/] },
+  stop: { domain: "button", suffix: "stop", patterns: [/_stop$/] },
 };
 
-const ENTITY_LABELS = {
-  back_cover: "Ryg (cover)",
-  legs_cover: "Ben (cover)",
-  both_cover: "Begge (cover)",
-  back_angle: "Ryg vinkel (sensor)",
-  legs_angle: "Ben vinkel (sensor)",
-  light: "Lys (switch)",
-  connection: "Forbindelse (binary_sensor)",
-  problem: "Bluetooth svarer ikke (binary_sensor)",
-  preset: "Preset (select)",
-  stop: "Stop (button)",
+const matchEntity = (key, entityId) => {
+  const m = MATCHERS[key];
+  const [domain, objectId] = String(entityId).split(/\.(.+)/);
+  return !!m && domain === m.domain && !!objectId && m.patterns.some((re) => re.test(objectId));
 };
+
+// All user-facing text lives here (card and editor). Add a language by adding
+// an object with the same keys; the language comes from `language:` in the
+// card config or the Home Assistant user language (falls back to English).
+const STRINGS = {
+  da: {
+    bed: "Seng", back: "Ryg", legs: "Ben", both: "Begge", up: "op", down: "ned",
+    stop: "Stop", light: "Lys", lightOn: "Lys tændt", lightOff: "Lys slukket",
+    connected: "Forbundet", notConnected: "Ikke forbundet", noResponse: "Svarer ikke",
+    btNoResponse: "Bluetooth svarer ikke", flat: "Flad",
+    posLine: "Ryg {back}% · Ben {legs}%", presetLabel: "Preset {name}",
+    presets: "Presets", loading: "Henter data fra Home Assistant…",
+    incomplete: "Vælg sengen i kortets editor (blyant-ikonet), så findes alle entiteter automatisk.",
+    notFound: "Ingen entiteter blev fundet for denne seng. Tjek enheden, eller vælg entiteterne manuelt i editoren.",
+    missing: "Mangler: {list}", unavailable: "Utilgængelig: {list}",
+    allUnavailable: "Sengen er utilgængelig i Home Assistant.",
+    deviceLabel: "Seng (enhed)", nameLabel: "Navn på kortet",
+    deviceHelper: "Vælg sengens ESPHome-enhed. Alle entiteter findes automatisk.",
+    advanced: "Avanceret: vælg entiteter manuelt",
+    entities: {
+      back_cover: "Ryg (cover)", legs_cover: "Ben (cover)", both_cover: "Begge (cover)",
+      back_angle: "Ryg vinkel (sensor)", legs_angle: "Ben vinkel (sensor)", light: "Lys (switch)",
+      connection: "Forbindelse (binary_sensor)", problem: "Bluetooth svarer ikke (binary_sensor)",
+      preset: "Preset (select)", stop: "Stop (button)",
+    },
+  },
+  en: {
+    bed: "Bed", back: "Back", legs: "Legs", both: "Both", up: "up", down: "down",
+    stop: "Stop", light: "Light", lightOn: "Light on", lightOff: "Light off",
+    connected: "Connected", notConnected: "Not connected", noResponse: "Not responding",
+    btNoResponse: "Bluetooth not responding", flat: "Flat",
+    posLine: "Back {back}% · Legs {legs}%", presetLabel: "Preset {name}",
+    presets: "Presets", loading: "Waiting for Home Assistant…",
+    incomplete: "Pick the bed in the card editor (pencil icon) and all entities are found automatically.",
+    notFound: "No entities were found for this bed. Check the device, or pick the entities manually in the editor.",
+    missing: "Missing: {list}", unavailable: "Unavailable: {list}",
+    allUnavailable: "The bed is unavailable in Home Assistant.",
+    deviceLabel: "Bed (device)", nameLabel: "Card name",
+    deviceHelper: "Pick the bed's ESPHome device. All entities are found automatically.",
+    advanced: "Advanced: pick entities manually",
+    entities: {
+      back_cover: "Back (cover)", legs_cover: "Legs (cover)", both_cover: "Both (cover)",
+      back_angle: "Back angle (sensor)", legs_angle: "Legs angle (sensor)", light: "Light (switch)",
+      connection: "Connection (binary_sensor)", problem: "Bluetooth not responding (binary_sensor)",
+      preset: "Preset (select)", stop: "Stop (button)",
+    },
+  },
+};
+
+const langOf = (hass, config) => {
+  const l = String((config && config.language) || (hass && hass.language) || "en").toLowerCase();
+  return STRINGS[l] ? l : STRINGS[l.split("-")[0]] ? l.split("-")[0] : "en";
+};
+const tr = (lang, key, vars = {}) =>
+  String(STRINGS[lang][key] ?? STRINGS.en[key] ?? key).replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? "");
 
 const DEFAULT_PRESETS = ["Flad", "Sove", "TV", "Helt Oppe"];
-
-const DEFAULT_ENTITIES = {
-  back_cover: "cover.{p}_head",
-  legs_cover: "cover.{p}_legs",
-  both_cover: "cover.{p}_hoved_fod",
-  back_angle: "sensor.{p}_ryg_hojde",
-  legs_angle: "sensor.{p}_ben_hojde",
-  light: "switch.{p}_lys",
-  connection: "binary_sensor.{p}_forbindelse_status",
-  problem: "binary_sensor.{p}_bluetooth_svarer_ikke",
-  preset: "select.{p}_preset_mode",
-  stop: "button.{p}_stop",
-};
 
 const BACK_MAX = 68;
 const LEGS_MAX = 45;
@@ -89,13 +128,13 @@ class LinakBedCard extends HTMLElement {
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
     this._built = false;
     if (this._hass) this.hass = this._hass;
+    else this._build();
   }
 
   set hass(hass) {
     this._hass = hass;
     if (!this._config) return;
     this._resolve();
-    if (!this._built) this._build();
     this._update();
   }
 
@@ -110,13 +149,14 @@ class LinakBedCard extends HTMLElement {
   static getStubConfig(hass) {
     // Pre-select the first device that looks like a LINAK bed.
     const reg = (hass && hass.entities) || {};
+    const lang = langOf(hass);
     for (const [id, e] of Object.entries(reg)) {
-      if (MATCHERS.legs_cover.test(id) && e.device_id) {
+      if (matchEntity("legs_cover", id) && e.device_id) {
         const dev = hass.devices && hass.devices[e.device_id];
-        return { name: (dev && (dev.name_by_user || dev.name)) || "Seng", device: e.device_id };
+        return { name: (dev && (dev.name_by_user || dev.name)) || tr(lang, "bed"), device: e.device_id };
       }
     }
-    return { name: "Seng" };
+    return { name: tr(lang, "bed") };
   }
 
   // Work out which entity to use for each role:
@@ -132,9 +172,10 @@ class LinakBedCard extends HTMLElement {
       ? Object.keys(reg).filter((id) => reg[id].device_id === cfg.device)
       : [];
     for (const key of Object.keys(MATCHERS)) {
+      const m = MATCHERS[key];
       const override = cfg.entities && cfg.entities[key];
-      const fromDevice = onDevice.find((id) => MATCHERS[key].test(id));
-      const fromPrefix = cfg.prefix ? DEFAULT_ENTITIES[key].replace("{p}", cfg.prefix) : null;
+      const fromDevice = onDevice.find((id) => matchEntity(key, id));
+      const fromPrefix = cfg.prefix ? `${m.domain}.${cfg.prefix}_${m.suffix}` : null;
       ent[key] = override || fromDevice || fromPrefix || "";
     }
     const key = JSON.stringify(ent);
@@ -149,9 +190,28 @@ class LinakBedCard extends HTMLElement {
     return Object.values(this._ent || {}).some((id) => id && this._hass.states[id]);
   }
 
+  // loading -> HA not ready; incomplete -> nothing chosen yet;
+  // notfound -> chosen but nothing exists; full -> normal card
+  _mode() {
+    const h = this._hass;
+    if (!h || !h.states || !Object.keys(h.states).length) return "loading";
+    const c = this._config || {};
+    if (!c.device && !c.prefix && !(c.entities && Object.values(c.entities).some(Boolean))) return "incomplete";
+    return this._configured() ? "full" : "notfound";
+  }
+
   // ---------------------------------------------------------------- helpers
+  _t(key, vars) {
+    return tr(this._lang, key, vars);
+  }
   _st(key) {
     return this._hass && this._ent && this._ent[key] ? this._hass.states[this._ent[key]] : undefined;
+  }
+  // "ok" | "unavailable" | "missing"
+  _avail(key) {
+    const s = this._st(key);
+    if (!s) return "missing";
+    return s.state === "unavailable" ? "unavailable" : "ok";
   }
   _presetList() {
     if (this._config.presets) return this._config.presets;
@@ -168,7 +228,7 @@ class LinakBedCard extends HTMLElement {
     return isNaN(v) ? 0 : v;
   }
   _call(domain, service, key, extra = {}) {
-    if (!this._hass || !this._ent[key]) return;
+    if (!this._hass || !this._ent[key] || this._avail(key) !== "ok") return;
     this._hass.callService(domain, service, { entity_id: this._ent[key], ...extra });
     if (navigator.vibrate) navigator.vibrate(15);
   }
@@ -178,15 +238,17 @@ class LinakBedCard extends HTMLElement {
 
   // ------------------------------------------------------------------ build
   _build() {
-    const name = this._esc(this._config.name || "Seng");
-    if (!this._configured()) {
+    this._lang = langOf(this._hass, this._config);
+    const mode = this._mode();
+    const name = this._esc(this._config.name || this._t("bed"));
+    if (mode !== "full") {
       this.shadowRoot.innerHTML = `
         <style>${LinakBedCard.styles}</style>
-        <ha-card><div class="wrap empty">
+        <ha-card><div class="wrap empty" role="status">
           <div class="name">${name}</div>
-          <div class="sub">Vælg sengen i kortets editor (blyant-ikonet), så findes alle entiteter automatisk.</div>
+          <div class="sub">${this._esc(this._t(mode === "notfound" ? "notFound" : mode))}</div>
         </div></ha-card>`;
-      this._built = "empty";
+      this._built = mode;
       return;
     }
     this.shadowRoot.innerHTML = `
@@ -198,12 +260,14 @@ class LinakBedCard extends HTMLElement {
               <span class="name">${name}</span>
               <span class="sub" id="sub">—</span>
             </div>
-            <div class="chip" id="conn">${this._icon(ICONS.bt)}<span id="connTxt">…</span></div>
+            <div class="chip" id="conn" role="status">${this._icon(ICONS.bt)}<span id="connTxt">…</span></div>
           </header>
+
+          <div class="notice" id="notice" role="status" hidden></div>
 
           <div class="stage">
             <div class="glow" id="glowEl"></div>
-            <svg class="bed" viewBox="0 0 340 170">
+            <svg class="bed" viewBox="0 0 340 170" aria-hidden="true">
               <!-- frame -->
               <rect class="frame" x="40" y="118" width="260" height="8" rx="4"/>
               <rect class="leg" x="52" y="126" width="8" height="26" rx="3"/>
@@ -227,33 +291,33 @@ class LinakBedCard extends HTMLElement {
               </g>
             </svg>
 
-            <div class="angle a-back"><span id="backDeg">0°</span><small>Ryg</small></div>
-            <div class="angle a-legs"><span id="legsDeg">0°</span><small>Ben</small></div>
-            <div class="warn" id="warn">Bluetooth svarer ikke</div>
+            <div class="angle a-back"><span id="backDeg">0°</span><small>${this._esc(this._t("back"))}</small></div>
+            <div class="angle a-legs"><span id="legsDeg">0°</span><small>${this._esc(this._t("legs"))}</small></div>
+            <div class="warn" id="warn" role="alert">${this._esc(this._t("btNoResponse"))}</div>
           </div>
 
           <div class="controls">
-            ${this._ctrlGroup("back", "Ryg")}
-            ${this._ctrlGroup("both", "Begge")}
-            ${this._ctrlGroup("legs", "Ben")}
+            ${this._ctrlGroup("back", this._t("back"))}
+            ${this._ctrlGroup("both", this._t("both"))}
+            ${this._ctrlGroup("legs", this._t("legs"))}
           </div>
 
-          <div class="presets" id="presets"></div>
+          <div class="presets" id="presets" role="group" aria-label="${this._esc(this._t("presets"))}"></div>
 
-          <div class="bottom">
-            <button class="light" id="light">${this._icon(ICONS.bulb)}<span id="lightTxt">Lys</span></button>
-            <button class="stopall" id="stopall">${this._icon(ICONS.stop)}<span>Stop</span></button>
+          <div class="bottom" id="bottom">
+            <button class="light" id="light" aria-pressed="false">${this._icon(ICONS.bulb)}<span id="lightTxt">${this._esc(this._t("light"))}</span></button>
+            <button class="stopall" id="stopall" aria-label="${this._esc(this._t("stop"))}">${this._icon(ICONS.stop)}<span>${this._esc(this._t("stop"))}</span></button>
           </div>
         </div>
       </ha-card>`;
 
     const $ = (s) => this.shadowRoot.querySelector(s);
     this._el = {
-      sub: $("#sub"), conn: $("#conn"), connTxt: $("#connTxt"), warn: $("#warn"),
+      sub: $("#sub"), conn: $("#conn"), connTxt: $("#connTxt"), warn: $("#warn"), notice: $("#notice"),
       back: $("#back"), thigh: $("#thigh"), calf: $("#calf"), glow: $("#glowEl"),
       backDeg: $("#backDeg"), legsDeg: $("#legsDeg"),
-      light: $("#light"), lightTxt: $("#lightTxt"), presets: $("#presets"),
-      card: $("ha-card"),
+      light: $("#light"), lightTxt: $("#lightTxt"), presets: $("#presets"), stopall: $("#stopall"),
+      bottom: $("#bottom"), card: $("ha-card"),
     };
 
     this.shadowRoot.querySelectorAll("[data-act]").forEach((b) =>
@@ -269,33 +333,50 @@ class LinakBedCard extends HTMLElement {
       const b = ev.target.closest(".preset");
       if (b) this._call("select", "select_option", "preset", { option: b.dataset.p });
     });
+    // Arrow keys / Home / End move between preset buttons
+    this._el.presets.addEventListener("keydown", (ev) => {
+      const keys = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 };
+      const btns = [...this._el.presets.querySelectorAll(".preset:not([disabled])")];
+      const i = btns.indexOf(this.shadowRoot.activeElement);
+      if (i < 0 || !btns.length) return;
+      let n;
+      if (ev.key in keys) n = (i + keys[ev.key] + btns.length) % btns.length;
+      else if (ev.key === "Home") n = 0;
+      else if (ev.key === "End") n = btns.length - 1;
+      else return;
+      ev.preventDefault();
+      btns[n].focus();
+    });
     this._presetKey = null;
     this._el.light.addEventListener("click", () => this._call("switch", "toggle", "light"));
-    $("#stopall").addEventListener("click", () => this._call("button", "press", "stop"));
+    this._el.stopall.addEventListener("click", () => this._call("button", "press", "stop"));
 
-    this._built = true;
+    this._built = "full";
   }
 
   _ctrlGroup(sec, label) {
+    const l = this._esc(label);
+    const up = this._esc(`${label} ${this._t("up")}`);
+    const stop = this._esc(`${label} ${this._t("stop").toLowerCase()}`);
+    const down = this._esc(`${label} ${this._t("down")}`);
     return `
-      <div class="grp">
-        <span class="glabel">${label}</span>
-        <button class="btn" data-act="${sec}:up" aria-label="${label} op">${this._icon(ICONS.up)}</button>
-        <button class="btn small" data-act="${sec}:stop" aria-label="${label} stop">${this._icon(ICONS.stop)}</button>
-        <button class="btn" data-act="${sec}:down" aria-label="${label} ned">${this._icon(ICONS.down)}</button>
+      <div class="grp" role="group" aria-label="${l}">
+        <span class="glabel" aria-hidden="true">${l}</span>
+        <button class="btn" data-act="${sec}:up" aria-label="${up}" title="${up}">${this._icon(ICONS.up)}</button>
+        <button class="btn small" data-act="${sec}:stop" aria-label="${stop}" title="${stop}">${this._icon(ICONS.stop)}</button>
+        <button class="btn" data-act="${sec}:down" aria-label="${down}" title="${down}">${this._icon(ICONS.down)}</button>
       </div>`;
   }
 
   // ----------------------------------------------------------------- update
   _update() {
-    if (!this._built || !this._hass) return;
-    // Entities appeared (or vanished): switch between placeholder and full card
-    if ((this._built === "empty") === this._configured()) {
-      this._built = false;
+    if (!this._hass) return;
+    // Language, entities or HA readiness changed: switch between placeholder and full card
+    if (!this._built || this._built !== this._mode() || this._lang !== langOf(this._hass, this._config)) {
       this._build();
       this._last = null;
     }
-    if (this._built === "empty") return; // placeholder shown, nothing to update
+    if (this._built !== "full") return; // placeholder shown, nothing to update
     const e = this._el;
 
     // Home Assistant calls `hass` on every state change in the whole system.
@@ -323,44 +404,77 @@ class LinakBedCard extends HTMLElement {
     const online = conn && conn.state === "on";
     const bad = problem && problem.state === "on";
     e.conn.className = "chip " + (bad ? "bad" : online ? "ok" : "off");
-    e.connTxt.textContent = bad ? "Svarer ikke" : online ? "Forbundet" : "Ikke forbundet";
+    e.connTxt.textContent = this._t(bad ? "noResponse" : online ? "connected" : "notConnected");
     e.warn.classList.toggle("show", !!bad);
     e.card.classList.toggle("offline", !online);
 
+    // Partial failures: list missing/unavailable entities, and disable or hide their controls
+    const keys = Object.keys(MATCHERS);
+    const label = (k) => STRINGS[this._lang].entities[k];
+    const missing = keys.filter((k) => this._avail(k) === "missing");
+    const unavail = keys.filter((k) => this._avail(k) === "unavailable");
+    const notes = [];
+    if (unavail.length === keys.length) notes.push(this._t("allUnavailable"));
+    else if (unavail.length) notes.push(this._t("unavailable", { list: unavail.map(label).join(", ") }));
+    if (missing.length) notes.push(this._t("missing", { list: missing.map(label).join(", ") }));
+    e.notice.textContent = notes.join(" ");
+    e.notice.hidden = !notes.length;
+
+    this.shadowRoot.querySelectorAll("[data-act]").forEach((b) => {
+      b.disabled = this._avail(`${b.dataset.act.split(":")[0]}_cover`) !== "ok";
+    });
+    e.stopall.disabled = this._avail("stop") !== "ok";
+
     const light = this._st("light");
-    const lightOn = light && light.state === "on";
+    const lightOn = !!light && light.state === "on";
+    e.light.hidden = this._avail("light") === "missing";
+    e.light.disabled = this._avail("light") !== "ok";
+    e.bottom.classList.toggle("nolight", e.light.hidden);
     e.glow.classList.toggle("on", lightOn);
     e.light.classList.toggle("on", lightOn);
-    e.lightTxt.textContent = lightOn ? "Lys tændt" : "Lys slukket";
+    e.light.setAttribute("aria-pressed", String(lightOn));
+    e.lightTxt.textContent = this._t(lightOn ? "lightOn" : "lightOff");
 
     const presets = this._presetList();
     const pKey = presets.join("|");
     if (pKey !== this._presetKey) {
       this._presetKey = pKey;
       e.presets.innerHTML = presets
-        .map((p) => `<button class="preset" data-p="${this._esc(p)}">${this._esc(p)}</button>`)
+        .map((p) => `<button class="preset" data-p="${this._esc(p)}" aria-pressed="false" aria-label="${this._esc(this._t("presetLabel", { name: p }))}">${this._esc(p)}</button>`)
         .join("");
     }
 
-    const preset = this._st("preset");
-    const cur = preset ? preset.state : null;
-    e.presets.querySelectorAll(".preset").forEach((b) => b.classList.toggle("active", b.dataset.p === cur));
+    e.presets.hidden = this._avail("preset") === "missing" && !this._config.presets;
+    const presetOk = this._avail("preset") === "ok";
+    const cur = sel && sel.state !== "unavailable" && sel.state !== "unknown" ? sel.state : null;
+    e.presets.querySelectorAll(".preset").forEach((b) => {
+      const active = b.dataset.p === cur;
+      b.disabled = !presetOk;
+      b.classList.toggle("active", active);
+      b.setAttribute("aria-pressed", String(active));
+    });
 
-    const pos = back < 1 && legs < 1 ? "Flad" : `Ryg ${Math.round((back / BACK_MAX) * 100)}% · Ben ${Math.round((legs / LEGS_MAX) * 100)}%`;
-    e.sub.textContent = pos;
+    const pos = back < 1 && legs < 1
+      ? this._t("flat")
+      : this._t("posLine", { back: Math.round((back / BACK_MAX) * 100), legs: Math.round((legs / LEGS_MAX) * 100) });
+    e.sub.textContent = cur ? `${cur} · ${pos}` : pos;
   }
 }
 
 LinakBedCard.styles = `
   :host {
-    --bed-accent: var(--linak-accent, #7aa7ff);
-    --bed-warm: #ffae42;
+    --bed-accent: var(--linak-accent, var(--primary-color, #7aa7ff));
+    --bed-warm: var(--linak-warm, var(--warning-color, #ffae42));
+    --bed-ok: var(--success-color, #2fbf71);
+    --bed-bad: var(--error-color, #ff5c5c);
+    --bed-on-accent: var(--text-primary-color, #fff);
     --bed-matt-top: var(--linak-mattress, #e9edf5);
-    --bed-matt-bot: #c3cad8;
+    --bed-matt-bot: var(--divider-color, #c3cad8);
     --bed-frame: var(--secondary-text-color, #8b93a5);
     --bed-surface: rgba(127,127,127,.10);
     --bed-surface-2: rgba(127,127,127,.18);
   }
+  [hidden] { display: none !important; }
   ha-card { overflow: hidden; transition: opacity .3s; }
   ha-card.offline .controls, ha-card.offline .presets { opacity: .45; }
   .wrap { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
@@ -377,8 +491,11 @@ LinakBedCard.styles = `
           border-radius: 999px; font-size: .75rem; font-weight: 600; white-space: nowrap;
           background: var(--bed-surface); color: var(--secondary-text-color); }
   .chip svg { width: 16px; height: 16px; fill: currentColor; }
-  .chip.ok  { color: #2fbf71; background: rgba(47,191,113,.14); }
-  .chip.bad { color: #ff5c5c; background: rgba(255,92,92,.16); animation: pulse 1.6s infinite; }
+  .chip.ok  { color: var(--bed-ok); background: color-mix(in srgb, var(--bed-ok) 14%, transparent); }
+  .chip.bad { color: var(--bed-bad); background: color-mix(in srgb, var(--bed-bad) 16%, transparent); animation: pulse 1.6s infinite; }
+  .notice { font-size: .8rem; color: var(--secondary-text-color); padding: 8px 12px; border-radius: 12px;
+            background: color-mix(in srgb, var(--bed-warm) 14%, transparent);
+            border-left: 3px solid var(--bed-warm); }
   @keyframes pulse { 50% { opacity: .55; } }
 
   .stage { position: relative; border-radius: 16px; padding: 6px 4px 0;
@@ -390,7 +507,7 @@ LinakBedCard.styles = `
   .seg { transform-box: view-box; transition: transform 1.2s cubic-bezier(.3,.7,.2,1); }
   /* Under-bed glow: plain CSS (no SVG gradient) so it never flickers while the bed redraws */
   .glow { position: absolute; left: 6%; right: 6%; bottom: 2%; height: 30%; border-radius: 50%;
-          background: radial-gradient(closest-side, rgba(255,179,71,.95), rgba(255,159,46,.45) 45%, rgba(255,159,46,0));
+          background: radial-gradient(closest-side, color-mix(in srgb, var(--bed-warm) 95%, transparent), color-mix(in srgb, var(--bed-warm) 45%, transparent) 45%, transparent);
           opacity: 0; transition: opacity .8s ease; pointer-events: none;
           transform: translateZ(0); will-change: opacity; }
   .glow.on { opacity: 1; }
@@ -403,11 +520,13 @@ LinakBedCard.styles = `
   .a-back { left: 14px; } .a-legs { right: 14px; }
 
   .warn { position: absolute; left: 50%; bottom: 6px; transform: translateX(-50%);
-          font-size: .72rem; font-weight: 600; color: #fff; background: #e04848;
+          font-size: .72rem; font-weight: 600; color: var(--bed-on-accent); background: var(--bed-bad);
           padding: 3px 10px; border-radius: 999px; opacity: 0; pointer-events: none; transition: opacity .3s; }
   .warn.show { opacity: 1; }
 
   button { font: inherit; cursor: pointer; border: none; -webkit-tap-highlight-color: transparent; }
+  button:focus-visible { outline: 2px solid var(--bed-accent); outline-offset: 2px; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
   button svg { width: 22px; height: 22px; fill: currentColor; }
 
   .controls { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
@@ -420,22 +539,23 @@ LinakBedCard.styles = `
          transition: transform .12s, background .2s, color .2s; }
   .btn.small { height: 30px; color: var(--secondary-text-color); }
   .btn.small svg { width: 16px; height: 16px; }
-  .btn:hover { background: color-mix(in srgb, var(--bed-accent) 22%, transparent); color: var(--bed-accent); }
-  .btn:active, .preset:active, .light:active, .stopall:active { transform: scale(.94); }
+  .btn:hover:not(:disabled) { background: color-mix(in srgb, var(--bed-accent) 22%, transparent); color: var(--bed-accent); }
+  button:active:not(:disabled) { transform: scale(.94); }
 
   .presets { display: grid; grid-template-columns: repeat(auto-fit, minmax(70px, 1fr)); gap: 8px; }
   .preset { padding: 9px 6px; border-radius: 12px; font-size: .85rem; font-weight: 600;
             background: var(--bed-surface); color: var(--primary-text-color); transition: all .2s; }
-  .preset.active { background: var(--bed-accent); color: #fff;
+  .preset.active { background: var(--bed-accent); color: var(--bed-on-accent);
                    box-shadow: 0 4px 14px color-mix(in srgb, var(--bed-accent) 45%, transparent); }
 
   .bottom { display: grid; grid-template-columns: 1fr auto; gap: 10px; }
+  .bottom.nolight { grid-template-columns: 1fr; }
   .light, .stopall { display: flex; align-items: center; justify-content: center; gap: 8px;
                      padding: 11px 14px; border-radius: 14px; font-weight: 600; font-size: .9rem;
                      background: var(--bed-surface); color: var(--primary-text-color); transition: all .25s; }
-  .light.on { background: linear-gradient(135deg, #ffcf70, var(--bed-warm)); color: #3a2400;
-              box-shadow: 0 6px 22px rgba(255,166,60,.45); }
-  .stopall { background: rgba(255,92,92,.14); color: #ff5c5c; }
+  .light.on { background: linear-gradient(135deg, color-mix(in srgb, var(--bed-warm) 65%, white), var(--bed-warm)); color: #3a2400;
+              box-shadow: 0 6px 22px color-mix(in srgb, var(--bed-warm) 45%, transparent); }
+  .stopall { background: color-mix(in srgb, var(--bed-bad) 14%, transparent); color: var(--bed-bad); }
   .stopall svg { width: 18px; height: 18px; }
 `;
 
@@ -479,22 +599,24 @@ class LinakBedCardEditor extends HTMLElement {
       {
         type: "expandable",
         name: "entities",
-        title: "Avanceret: vælg entiteter manuelt",
+        title: this._t("advanced"),
         schema: Object.keys(MATCHERS).map((k) => ({
           name: k,
-          selector: { entity: { domain: MATCHERS[k].source.slice(1).split("\\.")[0] } },
+          selector: { entity: { domain: MATCHERS[k].domain } },
         })),
       },
     ];
   }
 
-  _label = (s) =>
-    ({ device: "Seng (enhed)", name: "Navn på kortet" }[s.name] || ENTITY_LABELS[s.name] || s.name);
+  _t(key) {
+    return tr(langOf(this._hass, this._config), key);
+  }
 
-  _helper = (s) =>
-    s.name === "device"
-      ? "Vælg sengens ESPHome-enhed. Alle entiteter findes automatisk."
-      : undefined;
+  _label = (s) =>
+    ({ device: this._t("deviceLabel"), name: this._t("nameLabel") }[s.name] ||
+      STRINGS[langOf(this._hass, this._config)].entities[s.name] || s.name);
+
+  _helper = (s) => (s.name === "device" ? this._t("deviceHelper") : undefined);
 
   async _update() {
     if (!this._hass || !this._config) return;
@@ -523,7 +645,7 @@ class LinakBedCardEditor extends HTMLElement {
       const devName = dev && (dev.name_by_user || dev.name);
       const oldDev = this._config.device && this._hass.devices && this._hass.devices[this._config.device];
       const oldName = oldDev && (oldDev.name_by_user || oldDev.name);
-      if (devName && (!cfg.name || cfg.name === "Seng" || cfg.name === oldName)) cfg.name = devName;
+      if (devName && (!cfg.name || Object.values(STRINGS).some((l) => l.bed === cfg.name) || cfg.name === oldName)) cfg.name = devName;
       delete cfg.prefix; // device lookup replaces the old prefix guess
     }
 
