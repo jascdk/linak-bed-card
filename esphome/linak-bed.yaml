@@ -1,0 +1,663 @@
+# ============================================================
+# ESPHome config for LINAK adjustable bed (example for linak-bed-card)
+# Protocol reference (updated):
+#   https://github.com/kristofferR/ha-adjustable-bed/blob/main/docs/beds/linak.md
+#
+# Bed type: 2-motor (Back + Legs)
+#   Back: UUID 99fa0028, max_pos=820, max_angle=68°
+#   Legs: UUID 99fa0027, max_pos=548, max_angle=45°
+#
+# Commands used (all [opcode, 0x00] to 99fa0002):
+#   Back Up/Down 0x0B/0x0A   Legs Up/Down 0x09/0x08
+#   All Up 0x01              All Down (Flat) 0x00  (held command, NOT stop)
+#   Release/Stop 0xFF        Memory 1-4 0x0E/0x0F/0x0C/0x44
+#   Store 1-4 0x38/0x39/0x3A/0x45
+#   Light On/Off/Toggle 0x92/0x93/0x94 (one-shot)
+#
+# Changes vs. previous version (to stop the bed's BLE module hanging):
+#   - Every movement and preset now ends with an FF 00 release (as the app does)
+#   - All movements go through ONE script -> no overlapping command streams
+#   - Memory 5/6 removed (not supported by the app/firmware)
+#   - Nothing is sent in the first 15 s after connecting (bed not ready yet)
+#   - Light commands are queued, one-shot, and never sent during movement
+#   - 5-minute light keepalive removed
+#   - Auto-off timer is a restartable script (no stacked delays)
+#   - Position lambdas: size check, near-zero (-1..-3) handled as 0°
+#   - Position read every 5 min as heartbeat -> "Bluetooth svarer ikke" sensor
+#   - Log level DEBUG instead of VERBOSE
+#   - Bluetooth name (standard 1800/2a00) read once per connection
+#   - Rename: "Nyt Bluetooth navn" text + "Omdøb seng" button
+# ============================================================
+
+substitutions:
+  device_name: 'linak-seng'
+  friendly_name: 'Min Seng'
+  device_description: "Bluetooth kontrol af elevationsseng"
+  project_version: "1.1.0"
+  log_level: DEBUG
+  mac_address: "AA:BB:CC:DD:EE:FF" # your bed's Bluetooth MAC
+  svc_control: "99fa0001-338a-1024-8a49-009c0215f78a"
+  chr_control: "99fa0002-338a-1024-8a49-009c0215f78a"
+
+# Basic device setup (replace with your own if you use a shared base package)
+logger:
+  level: ${log_level}
+
+api:
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+time:
+  - platform: homeassistant
+
+esphome:
+  name: ${device_name}
+  comment: '${device_description}'
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+# ============================================================
+# GLOBALS
+# ============================================================
+globals:
+  # True once the bed has been connected for 15 s and accepts commands
+  - id: bed_ready
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  # millis() of the last data received from the bed (heartbeat)
+  - id: last_bed_response
+    type: uint32_t
+    restore_value: no
+    initial_value: '0'
+
+# ============================================================
+# BLE
+# ============================================================
+esp32_ble_tracker:
+  scan_parameters:
+    duration: 30s
+
+ble_client:
+  - mac_address: ${mac_address}
+    id: rc_bed
+    auto_connect: true
+    on_connect:
+      then:
+        - globals.set:
+            id: bed_ready
+            value: 'false'
+        - lambda: |-
+            id(last_bed_response) = millis();
+            ESP_LOGI("bed", "Connected to bed - waiting 15 s before sending commands");
+        - binary_sensor.template.publish:
+            id: bed_remote_connection_status
+            state: true
+        - esp32_ble_tracker.stop_scan:
+        # Linak needs ~12 s after connecting before it accepts control writes
+        - delay: 15s
+        - if:
+            condition:
+              lambda: 'return id(bed_remote_connection_status).state;'
+            then:
+              - globals.set:
+                  id: bed_ready
+                  value: 'true'
+              - logger.log:
+                  level: INFO
+                  format: "bed ready for commands"
+              # Read the bed's Bluetooth name once per connection
+              - component.update: bed_ble_name
+    on_disconnect:
+      then:
+        - globals.set:
+            id: bed_ready
+            value: 'false'
+        - logger.log:
+            level: WARN
+            format: "Disconnected from bed"
+        - binary_sensor.template.publish:
+            id: bed_remote_connection_status
+            state: false
+        - esp32_ble_tracker.start_scan:
+
+# ============================================================
+# BINARY SENSORS
+# ============================================================
+binary_sensor:
+  - platform: template
+    name: "${friendly_name} forbindelse status"
+    id: bed_remote_connection_status
+    device_class: connectivity
+
+  # ON when connected but the bed has not answered a position read for 12 min.
+  # Use this in HA to power-cycle the bed via a smart plug.
+  - platform: template
+    name: "${friendly_name} Bluetooth svarer ikke"
+    id: bed_not_responding
+    device_class: problem
+    lambda: |-
+      if (!id(bed_remote_connection_status).state) return false;
+      if (!id(bed_ready)) return false;
+      return (millis() - id(last_bed_response)) > (12UL * 60UL * 1000UL);
+
+# ============================================================
+# SCRIPTS
+# ============================================================
+script:
+
+  # The ONLY script that sends movement / preset commands.
+  # mode: restart -> a new command replaces the running one immediately.
+  # cmd   = opcode, count = number of 100 ms repeats
+  - id: bed_move
+    mode: restart
+    parameters:
+      cmd: int
+      count: int
+    then:
+      - if:
+          condition:
+            lambda: 'return id(bed_ready);'
+          then:
+            # Release whatever was held before
+            - ble_client.ble_write:
+                id: rc_bed
+                service_uuid: ${svc_control}
+                characteristic_uuid: ${chr_control}
+                value: [0xFF, 0x00]
+            - delay: 100ms
+            - logger.log:
+                format: "Bed move 0x%02X x%d"
+                args: ['cmd', 'count']
+            - repeat:
+                count: !lambda 'return count;'
+                then:
+                  - ble_client.ble_write:
+                      id: rc_bed
+                      service_uuid: ${svc_control}
+                      characteristic_uuid: ${chr_control}
+                      value: !lambda 'return {(uint8_t) cmd, (uint8_t) 0x00};'
+                  - delay: 100ms
+            # Always release when done
+            - ble_client.ble_write:
+                id: rc_bed
+                service_uuid: ${svc_control}
+                characteristic_uuid: ${chr_control}
+                value: [0xFF, 0x00]
+          else:
+            - logger.log:
+                level: WARN
+                format: "Bed not ready - movement 0x%02X ignored"
+                args: ['cmd']
+
+  # Stop: kill the movement and send the release
+  - id: bed_stop
+    mode: queued
+    max_runs: 2
+    then:
+      - script.stop: bed_move
+      - if:
+          condition:
+            lambda: 'return id(bed_remote_connection_status).state;'
+          then:
+            - ble_client.ble_write:
+                id: rc_bed
+                service_uuid: ${svc_control}
+                characteristic_uuid: ${chr_control}
+                value: [0xFF, 0x00]
+      - logger.log: "Bed stop"
+
+  # One-shot commands (light, store memory). Queued, sent one at a time,
+  # only when the bed is ready and nothing is moving.
+  - id: bed_oneshot
+    mode: queued
+    max_runs: 4
+    parameters:
+      cmd: int
+    then:
+      - wait_until:
+          condition:
+            and:
+              - lambda: 'return id(bed_ready);'
+              - not:
+                  - script.is_running: bed_move
+          timeout: 40s
+      - if:
+          condition:
+            and:
+              - lambda: 'return id(bed_ready);'
+              - not:
+                  - script.is_running: bed_move
+          then:
+            - delay: 200ms
+            - ble_client.ble_write:
+                id: rc_bed
+                service_uuid: ${svc_control}
+                characteristic_uuid: ${chr_control}
+                value: !lambda 'return {(uint8_t) cmd, (uint8_t) 0x00};'
+            - logger.log:
+                format: "One-shot 0x%02X sent"
+                args: ['cmd']
+            - delay: 300ms
+          else:
+            - logger.log:
+                level: WARN
+                format: "One-shot 0x%02X dropped - bed not ready or moving"
+                args: ['cmd']
+
+  # Auto-off timer for the light. Restarts if light is turned on again.
+  - id: light_auto_off_timer
+    mode: restart
+    then:
+      - delay: !lambda 'return (uint32_t)(id(timeout_timer_slider).state * 60000);'
+      - logger.log: "Light auto-off timer expired"
+      - switch.turn_off: bed_light
+
+# ============================================================
+# SWITCHES
+# ============================================================
+switch:
+
+  # Under-bed light. The bed reports no light state, so this is optimistic.
+  - platform: template
+    name: "${friendly_name} Lys"
+    id: bed_light
+    icon: "mdi:lightbulb-outline"
+    optimistic: true
+    turn_on_action:
+      - script.execute:
+          id: bed_oneshot
+          cmd: 0x92
+    turn_off_action:
+      - script.execute:
+          id: bed_oneshot
+          cmd: 0x93
+    on_turn_on:
+      then:
+        - if:
+            condition:
+              lambda: 'return id(mode).current_option() == "Fra" && id(timeout_timer_slider).state > 0;'
+            then:
+              - script.execute: light_auto_off_timer
+    on_turn_off:
+      then:
+        - script.stop: light_auto_off_timer
+
+  # BLE connection as a switch for manual control/diagnostics
+  - platform: template
+    name: "${friendly_name} BLE Connection"
+    id: ble_connection_switch
+    entity_category: diagnostic
+    optimistic: false
+    turn_on_action:
+      - ble_client.connect:
+          id: rc_bed
+    turn_off_action:
+      - ble_client.disconnect:
+          id: rc_bed
+    lambda: |-
+      return id(bed_remote_connection_status).state;
+
+# ============================================================
+# COVERS - open = up, close = down. 100 x 100 ms = 10 s max travel.
+# ============================================================
+cover:
+
+  - platform: template
+    name: "${friendly_name} hoved-fod"
+    id: both_actuators
+    assumed_state: true
+    icon: "mdi:arrow-expand-vertical"
+    open_action:
+      - script.execute:
+          id: bed_move
+          cmd: 0x01   # All up
+          count: 100
+    close_action:
+      - script.execute:
+          id: bed_move
+          cmd: 0x00   # All down / flat (held command)
+          count: 100
+    stop_action:
+      - script.execute: bed_stop
+
+  - platform: template
+    name: "${friendly_name} Head"
+    id: head_actuator
+    assumed_state: true
+    icon: "mdi:head"
+    open_action:
+      - script.execute:
+          id: bed_move
+          cmd: 0x0B   # Back up
+          count: 100
+    close_action:
+      - script.execute:
+          id: bed_move
+          cmd: 0x0A   # Back down
+          count: 100
+    stop_action:
+      - script.execute: bed_stop
+
+  - platform: template
+    name: "${friendly_name} Legs"
+    id: leg_actuator
+    assumed_state: true
+    icon: "mdi:foot-print"
+    open_action:
+      - script.execute:
+          id: bed_move
+          cmd: 0x09   # Legs up
+          count: 100
+    close_action:
+      - script.execute:
+          id: bed_move
+          cmd: 0x08   # Legs down
+          count: 100
+    stop_action:
+      - script.execute: bed_stop
+
+# ============================================================
+# BUTTONS
+# ============================================================
+button:
+
+  - platform: template
+    name: "${friendly_name} Stop"
+    id: bed_stop_button
+    icon: "mdi:stop"
+    on_press:
+      - script.execute: bed_stop
+
+  # Store presets (config category = hidden from main dashboard)
+  - platform: template
+    name: "${friendly_name} Gem Preset 1"
+    icon: "mdi:file-account"
+    entity_category: config
+    on_press:
+      - script.execute:
+          id: bed_oneshot
+          cmd: 0x38
+
+  - platform: template
+    name: "${friendly_name} Gem Preset 2"
+    icon: "mdi:file-account"
+    entity_category: config
+    on_press:
+      - script.execute:
+          id: bed_oneshot
+          cmd: 0x39
+
+  - platform: template
+    name: "${friendly_name} Gem Preset 3"
+    icon: "mdi:file-account"
+    entity_category: config
+    on_press:
+      - script.execute:
+          id: bed_oneshot
+          cmd: 0x3A
+
+  - platform: template
+    name: "${friendly_name} Gem Preset 4"
+    icon: "mdi:file-account"
+    entity_category: config
+    on_press:
+      - script.execute:
+          id: bed_oneshot
+          cmd: 0x45
+
+  # Light toggle (stateless)
+  - platform: template
+    name: "${friendly_name} Lys Toggle"
+    id: light_bed_toggle
+    icon: "mdi:lightbulb-auto-outline"
+    on_press:
+      - script.execute:
+          id: bed_oneshot
+          cmd: 0x94
+
+  # Rename the bed's Bluetooth name to the text in "Nyt Bluetooth navn".
+  # Writes 1-17 UTF-8 bytes to the standard Device Name (1800/2a00),
+  # then disconnects so the bed advertises the new name, and reconnects.
+  - platform: template
+    name: "${friendly_name} Omdøb seng"
+    id: bed_rename_button
+    icon: "mdi:rename"
+    entity_category: config
+    on_press:
+      - if:
+          condition:
+            lambda: |-
+              const std::string &n = id(bed_new_name).state;
+              return id(bed_ready) && !id(bed_move).is_running()
+                     && n.size() >= 1 && n.size() <= 17;
+          then:
+            - logger.log:
+                level: INFO
+                format: "Renaming bed to '%s'"
+                args: ['id(bed_new_name).state.c_str()']
+            - ble_client.ble_write:
+                id: rc_bed
+                service_uuid: '1800'
+                characteristic_uuid: '2a00'
+                value: !lambda |-
+                  const std::string &n = id(bed_new_name).state;
+                  return std::vector<uint8_t>(n.begin(), n.end());
+            - delay: 1s
+            - ble_client.disconnect: rc_bed
+            - delay: 5s
+            - ble_client.connect: rc_bed
+          else:
+            - logger.log:
+                level: WARN
+                format: "Rename skipped: bed not ready, moving, or name not 1-17 bytes (æ/ø/å count as 2)"
+
+# ============================================================
+# SELECT
+# ============================================================
+select:
+
+  # Preset recall. Held for up to 30 s (app limit), then released.
+  # Connection/ready guard prevents firing on boot.
+  - platform: template
+    id: select_preset
+    name: ${friendly_name} Preset Mode
+    optimistic: true
+    restore_value: true
+    options:
+      - "Flad"
+      - "Sove"
+      - "TV"
+      - "Helt Oppe"
+    initial_option: Flad
+    on_value:
+      then:
+        - if:
+            condition:
+              lambda: 'return id(bed_ready);'
+            then:
+              - lambda: |-
+                  int cmd = -1;
+                  if      (x == "Flad")      cmd = 0x0E;  // Memory 1
+                  else if (x == "Sove")      cmd = 0x0F;  // Memory 2
+                  else if (x == "TV")        cmd = 0x0C;  // Memory 3
+                  else if (x == "Helt Oppe") cmd = 0x44;  // Memory 4
+                  if (cmd >= 0) id(bed_move).execute(cmd, 300);
+
+  # Light automation mode
+  - platform: template
+    name: ${friendly_name} Automatisering Lys
+    id: mode
+    options:
+      - "Fra"
+      - "Auto Lys"
+    initial_option: "Fra"
+    optimistic: true
+    restore_value: true
+    set_action:
+      - logger.log:
+          format: "Chosen option: %s"
+          args: ["x.c_str()"]
+
+# ============================================================
+# DATETIME - Auto light on/off times
+# ============================================================
+datetime:
+
+  - platform: template
+    id: time_turn_on
+    type: time
+    name: "Auto Tænd ${friendly_name}"
+    optimistic: yes
+    initial_value: "06:30:00"
+    restore_value: true
+    on_time:
+      then:
+        - if:
+            condition:
+              lambda: 'return id(mode).current_option() == "Auto Lys";'
+            then:
+              - logger.log: "Time trigger: light ON"
+              - switch.turn_on: bed_light
+
+  - platform: template
+    id: time_turn_off
+    type: time
+    name: "Auto Sluk ${friendly_name}"
+    optimistic: yes
+    initial_value: "23:00:00"
+    restore_value: true
+    on_time:
+      then:
+        - if:
+            condition:
+              lambda: 'return id(mode).current_option() == "Auto Lys";'
+            then:
+              - logger.log: "Time trigger: light OFF"
+              - switch.turn_off: bed_light
+
+# ============================================================
+# NUMBER - Light timeout slider
+# ============================================================
+number:
+  - platform: template
+    id: timeout_timer_slider
+    name: "Timeout Lys ${friendly_name}"
+    max_value: 30
+    min_value: 1
+    step: 1
+    unit_of_measurement: "min"
+    mode: slider
+    initial_value: 10
+    optimistic: true
+    restore_value: true
+
+# ============================================================
+# SENSORS - Position feedback
+# notify: live updates during movement
+# update_interval: 5min read = heartbeat for "Bluetooth svarer ikke"
+# ============================================================
+sensor:
+
+  - platform: ble_client
+    type: characteristic
+    ble_client_id: rc_bed
+    id: back_height
+    name: '${friendly_name} ryg højde'
+    service_uuid: '99fa0020-338a-1024-8a49-009c0215f78a'
+    characteristic_uuid: '99fa0028-338a-1024-8a49-009c0215f78a'
+    icon: 'mdi:arrow-up-down'
+    unit_of_measurement: '°'
+    accuracy_decimals: 1
+    update_interval: 5min
+    notify: true
+    lambda: |-
+      id(last_bed_response) = millis();
+      if (x.size() < 2) return NAN;
+      uint16_t raw = (x[1] << 8) | x[0];
+      if (raw >= 0xFFFD) return 0.0;      // -1..-3 = resting just below zero
+      if (raw > 902) return 68.0;         // clamp (820 * 1.1)
+      return (float) raw / 820.0 * 68.0;
+
+  - platform: ble_client
+    type: characteristic
+    ble_client_id: rc_bed
+    id: legs_height
+    name: '${friendly_name} ben højde'
+    service_uuid: '99fa0020-338a-1024-8a49-009c0215f78a'
+    characteristic_uuid: '99fa0027-338a-1024-8a49-009c0215f78a'
+    icon: 'mdi:arrow-up-down'
+    unit_of_measurement: '°'
+    accuracy_decimals: 1
+    update_interval: 5min
+    notify: true
+    lambda: |-
+      id(last_bed_response) = millis();
+      if (x.size() < 2) return NAN;
+      uint16_t raw = (x[1] << 8) | x[0];
+      if (raw >= 0xFFFD) return 0.0;
+      if (raw > 602) return 45.0;         // clamp (548 * 1.1)
+      return (float) raw / 548.0 * 45.0;
+
+  - platform: template
+    name: "${friendly_name} ryg højde procent"
+    id: back_percent
+    unit_of_measurement: "%"
+    icon: "mdi:percent"
+    accuracy_decimals: 0
+    update_interval: 30s
+    lambda: |-
+      float angle = id(back_height).state;
+      if (isnan(angle) || angle <= 0) return 0.0;
+      return (angle / 68.0) * 100.0;
+
+  - platform: template
+    name: "${friendly_name} ben højde procent"
+    id: legs_percent
+    unit_of_measurement: "%"
+    icon: "mdi:percent"
+    accuracy_decimals: 0
+    update_interval: 30s
+    lambda: |-
+      float angle = id(legs_height).state;
+      if (isnan(angle) || angle <= 0) return 0.0;
+      return (angle / 45.0) * 100.0;
+
+# ============================================================
+# TEXT - New Bluetooth name (used by the "Omdøb seng" button)
+# ============================================================
+text:
+  - platform: template
+    name: "${friendly_name} Nyt Bluetooth navn"
+    id: bed_new_name
+    icon: "mdi:form-textbox"
+    entity_category: config
+    mode: text
+    min_length: 0
+    max_length: 17
+    optimistic: true
+    restore_value: false
+
+# ============================================================
+# TEXT SENSORS - Bed's Bluetooth name
+# Standard Bluetooth SIG: Generic Access (1800) / Device Name (2a00)
+# Read once per connection from on_connect (no polling).
+# ============================================================
+text_sensor:
+  - platform: ble_client
+    ble_client_id: rc_bed
+    id: bed_ble_name
+    name: "${friendly_name} Bluetooth navn"
+    icon: "mdi:bed"
+    entity_category: diagnostic
+    service_uuid: '1800'
+    characteristic_uuid: '2a00'
+    update_interval: never
