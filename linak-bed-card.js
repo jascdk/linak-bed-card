@@ -17,7 +17,7 @@
  *     ...
  */
 
-const VERSION = "1.0.1";
+const VERSION = "1.0.2";
 
 const DEFAULT_ENTITIES = {
   back_cover: "cover.{p}_head",
@@ -113,21 +113,8 @@ class LinakBedCard extends HTMLElement {
           </header>
 
           <div class="stage">
+            <div class="glow" id="glowEl"></div>
             <svg class="bed" viewBox="0 0 340 170">
-              <defs>
-                <radialGradient id="glow" cx="50%" cy="50%" r="50%">
-                  <stop offset="0%" stop-color="#ffb347" stop-opacity=".95"/>
-                  <stop offset="45%" stop-color="#ff9f2e" stop-opacity=".45"/>
-                  <stop offset="100%" stop-color="#ff9f2e" stop-opacity="0"/>
-                </radialGradient>
-                <linearGradient id="matt" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stop-color="var(--bed-matt-top)"/>
-                  <stop offset="100%" stop-color="var(--bed-matt-bot)"/>
-                </linearGradient>
-              </defs>
-
-              <ellipse id="glowEl" class="glow" cx="170" cy="150" rx="150" ry="26" fill="url(#glow)"/>
-
               <!-- frame -->
               <rect class="frame" x="40" y="118" width="260" height="8" rx="4"/>
               <rect class="leg" x="52" y="126" width="8" height="26" rx="3"/>
@@ -288,11 +275,16 @@ LinakBedCard.styles = `
            background: radial-gradient(120% 90% at 50% 0%, var(--bed-surface-2), transparent 70%); }
   .bed { width: 100%; height: auto; display: block; }
   .frame, .leg { fill: var(--bed-frame); opacity: .55; }
-  .matt { fill: url(#matt); stroke: rgba(0,0,0,.12); stroke-width: 1; }
+  .matt { fill: var(--bed-matt-top); stroke: var(--bed-matt-bot); stroke-width: 1.5; }
   .pillow { fill: #ffffff; opacity: .9; }
   .seg { transform-box: view-box; transition: transform 1.2s cubic-bezier(.3,.7,.2,1); }
-  .glow { opacity: 0; transition: opacity .8s ease; }
+  /* Under-bed glow: plain CSS (no SVG gradient) so it never flickers while the bed redraws */
+  .glow { position: absolute; left: 6%; right: 6%; bottom: 2%; height: 30%; border-radius: 50%;
+          background: radial-gradient(closest-side, rgba(255,179,71,.95), rgba(255,159,46,.45) 45%, rgba(255,159,46,0));
+          opacity: 0; transition: opacity .8s ease; pointer-events: none;
+          transform: translateZ(0); will-change: opacity; }
   .glow.on { opacity: 1; }
+  .bed { position: relative; }
 
   .angle { position: absolute; top: 8px; display: flex; flex-direction: column; align-items: center;
            line-height: 1.05; color: var(--primary-text-color); }
