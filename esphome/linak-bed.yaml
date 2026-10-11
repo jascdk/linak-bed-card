@@ -27,6 +27,8 @@
 #   - Log level DEBUG instead of VERBOSE
 #   - Bluetooth name (standard 1800/2a00) read once per connection
 #   - Rename: "Nyt Bluetooth navn" text + "Omdøb seng" button
+#   - BLE Connection switch uses ble_client platform (OFF stays off)
+#   - Entity names without the bed name (HA adds the device name itself)
 # ============================================================
 
 substitutions:
@@ -134,14 +136,14 @@ ble_client:
 # ============================================================
 binary_sensor:
   - platform: template
-    name: "${friendly_name} forbindelse status"
+    name: "forbindelse status"
     id: bed_remote_connection_status
     device_class: connectivity
 
   # ON when connected but the bed has not answered a position read for 12 min.
   # Use this in HA to power-cycle the bed via a smart plug.
   - platform: template
-    name: "${friendly_name} Bluetooth svarer ikke"
+    name: "Bluetooth svarer ikke"
     id: bed_not_responding
     device_class: problem
     lambda: |-
@@ -268,7 +270,7 @@ switch:
 
   # Under-bed light. The bed reports no light state, so this is optimistic.
   - platform: template
-    name: "${friendly_name} Lys"
+    name: "Lys"
     id: bed_light
     icon: "mdi:lightbulb-outline"
     optimistic: true
@@ -291,20 +293,14 @@ switch:
       then:
         - script.stop: light_auto_off_timer
 
-  # BLE connection as a switch for manual control/diagnostics
-  - platform: template
-    name: "${friendly_name} BLE Connection"
+  # BLE connection on/off. OFF = disconnect and stay disconnected.
+  # Always ON after a reboot so the bed reconnects automatically.
+  - platform: ble_client
+    ble_client_id: rc_bed
     id: ble_connection_switch
+    name: "BLE Connection"
     entity_category: diagnostic
-    optimistic: false
-    turn_on_action:
-      - ble_client.connect:
-          id: rc_bed
-    turn_off_action:
-      - ble_client.disconnect:
-          id: rc_bed
-    lambda: |-
-      return id(bed_remote_connection_status).state;
+    restore_mode: ALWAYS_ON
 
 # ============================================================
 # COVERS - open = up, close = down. 100 x 100 ms = 10 s max travel.
@@ -312,7 +308,7 @@ switch:
 cover:
 
   - platform: template
-    name: "${friendly_name} hoved-fod"
+    name: "hoved-fod"
     id: both_actuators
     assumed_state: true
     icon: "mdi:arrow-expand-vertical"
@@ -330,7 +326,7 @@ cover:
       - script.execute: bed_stop
 
   - platform: template
-    name: "${friendly_name} Head"
+    name: "Head"
     id: head_actuator
     assumed_state: true
     icon: "mdi:head"
@@ -348,7 +344,7 @@ cover:
       - script.execute: bed_stop
 
   - platform: template
-    name: "${friendly_name} Legs"
+    name: "Legs"
     id: leg_actuator
     assumed_state: true
     icon: "mdi:foot-print"
@@ -371,7 +367,7 @@ cover:
 button:
 
   - platform: template
-    name: "${friendly_name} Stop"
+    name: "Stop"
     id: bed_stop_button
     icon: "mdi:stop"
     on_press:
@@ -379,7 +375,7 @@ button:
 
   # Store presets (config category = hidden from main dashboard)
   - platform: template
-    name: "${friendly_name} Gem Preset 1"
+    name: "Gem Preset 1"
     icon: "mdi:file-account"
     entity_category: config
     on_press:
@@ -388,7 +384,7 @@ button:
           cmd: 0x38
 
   - platform: template
-    name: "${friendly_name} Gem Preset 2"
+    name: "Gem Preset 2"
     icon: "mdi:file-account"
     entity_category: config
     on_press:
@@ -397,7 +393,7 @@ button:
           cmd: 0x39
 
   - platform: template
-    name: "${friendly_name} Gem Preset 3"
+    name: "Gem Preset 3"
     icon: "mdi:file-account"
     entity_category: config
     on_press:
@@ -406,7 +402,7 @@ button:
           cmd: 0x3A
 
   - platform: template
-    name: "${friendly_name} Gem Preset 4"
+    name: "Gem Preset 4"
     icon: "mdi:file-account"
     entity_category: config
     on_press:
@@ -416,7 +412,7 @@ button:
 
   # Light toggle (stateless)
   - platform: template
-    name: "${friendly_name} Lys Toggle"
+    name: "Lys Toggle"
     id: light_bed_toggle
     icon: "mdi:lightbulb-auto-outline"
     on_press:
@@ -428,7 +424,7 @@ button:
   # Writes 1-17 UTF-8 bytes to the standard Device Name (1800/2a00),
   # then disconnects so the bed advertises the new name, and reconnects.
   - platform: template
-    name: "${friendly_name} Omdøb seng"
+    name: "Omdøb seng"
     id: bed_rename_button
     icon: "mdi:rename"
     entity_category: config
@@ -469,7 +465,7 @@ select:
   # Connection/ready guard prevents firing on boot.
   - platform: template
     id: select_preset
-    name: ${friendly_name} Preset Mode
+    name: "Preset Mode"
     optimistic: true
     restore_value: true
     options:
@@ -494,7 +490,7 @@ select:
 
   # Light automation mode
   - platform: template
-    name: ${friendly_name} Automatisering Lys
+    name: "Automatisering Lys"
     id: mode
     options:
       - "Fra"
@@ -515,7 +511,7 @@ datetime:
   - platform: template
     id: time_turn_on
     type: time
-    name: "Auto Tænd ${friendly_name}"
+    name: "Auto Tænd"
     optimistic: yes
     initial_value: "06:30:00"
     restore_value: true
@@ -531,7 +527,7 @@ datetime:
   - platform: template
     id: time_turn_off
     type: time
-    name: "Auto Sluk ${friendly_name}"
+    name: "Auto Sluk"
     optimistic: yes
     initial_value: "23:00:00"
     restore_value: true
@@ -550,7 +546,7 @@ datetime:
 number:
   - platform: template
     id: timeout_timer_slider
-    name: "Timeout Lys ${friendly_name}"
+    name: "Timeout Lys"
     max_value: 30
     min_value: 1
     step: 1
@@ -571,7 +567,7 @@ sensor:
     type: characteristic
     ble_client_id: rc_bed
     id: back_height
-    name: '${friendly_name} ryg højde'
+    name: "ryg højde"
     service_uuid: '99fa0020-338a-1024-8a49-009c0215f78a'
     characteristic_uuid: '99fa0028-338a-1024-8a49-009c0215f78a'
     icon: 'mdi:arrow-up-down'
@@ -591,7 +587,7 @@ sensor:
     type: characteristic
     ble_client_id: rc_bed
     id: legs_height
-    name: '${friendly_name} ben højde'
+    name: "ben højde"
     service_uuid: '99fa0020-338a-1024-8a49-009c0215f78a'
     characteristic_uuid: '99fa0027-338a-1024-8a49-009c0215f78a'
     icon: 'mdi:arrow-up-down'
@@ -608,7 +604,7 @@ sensor:
       return (float) raw / 548.0 * 45.0;
 
   - platform: template
-    name: "${friendly_name} ryg højde procent"
+    name: "ryg højde procent"
     id: back_percent
     unit_of_measurement: "%"
     icon: "mdi:percent"
@@ -620,7 +616,7 @@ sensor:
       return (angle / 68.0) * 100.0;
 
   - platform: template
-    name: "${friendly_name} ben højde procent"
+    name: "ben højde procent"
     id: legs_percent
     unit_of_measurement: "%"
     icon: "mdi:percent"
@@ -636,7 +632,7 @@ sensor:
 # ============================================================
 text:
   - platform: template
-    name: "${friendly_name} Nyt Bluetooth navn"
+    name: "Nyt Bluetooth navn"
     id: bed_new_name
     icon: "mdi:form-textbox"
     entity_category: config
@@ -655,7 +651,7 @@ text_sensor:
   - platform: ble_client
     ble_client_id: rc_bed
     id: bed_ble_name
-    name: "${friendly_name} Bluetooth navn"
+    name: "Bluetooth navn"
     icon: "mdi:bed"
     entity_category: diagnostic
     service_uuid: '1800'
