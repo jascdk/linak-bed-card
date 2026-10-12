@@ -67,6 +67,26 @@ device: 0123456789abcdef0123456789abcdef
 
 Keys for `entities`: `back_cover`, `legs_cover`, `both_cover`, `back_angle`, `legs_angle`, `light`, `connection`, `problem`, `preset`, `stop`.
 
+### Two beds in one card
+
+Give the card one entity from each bed (any entity of the bed works, e.g. its head cover). The other entities are found on the same device, or by the entity ID prefix. The single-bed config above is unchanged.
+
+```yaml
+type: custom:linak-bed-card
+entity_a: cover.jacob_seng_head
+entity_b: cover.helene_seng_head
+name_a: Jacob # optional
+name_b: Helene # optional
+control_mode: single # optional: single (default) or linked
+```
+
+A **Single / Linked** toggle appears on the card:
+
+- **Single:** controls one bed. Pick bed A or B with the buttons next to the toggle.
+- **Linked:** every action (up, down, presets, light, stop) is sent to both beds at the same time. Stop is always sent to both beds. Controls are disabled if either bed can't do the action.
+
+The drawing and status show the selected bed (bed A in linked mode). `entity_a`/`entity_b` can't be combined with `device`, `prefix` or `entities`, and both must be set and different. The card shows an error otherwise.
+
 ### Manual configuration (fallback)
 
 If your entities are named differently, list them yourself. Anything you set under `entities` wins over automatic detection, and you can mix both:
