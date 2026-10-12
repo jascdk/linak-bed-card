@@ -17,6 +17,14 @@
  *   language: en               # optional: da | en (default: HA user language)
  *   entities:                  # optional per-entity overrides
  *     light: switch.my_light
+ *
+ * Two beds in one card (additive; single-bed config is unchanged):
+ *   type: custom:linak-bed-card
+ *   entity_a: cover.jacob_seng_head   # any entity of bed A
+ *   entity_b: cover.helene_seng_head  # any entity of bed B
+ *   name_a: Jacob                     # optional
+ *   name_b: Helene                    # optional
+ *   control_mode: single              # optional: single | linked
  */
 
 const VERSION = "1.1.0";
@@ -39,6 +47,48 @@ const MATCHERS = {
   stop: { domain: "button", suffix: "stop", patterns: [/_stop$/] },
 };
 
+// Validate the additive dual-bed options. Returns true for a dual config,
+// false for a normal single-bed config, and throws a clear error otherwise.
+const validateDual = (cfg) => {
+  const hasA = cfg.entity_a !== undefined && cfg.entity_a !== null && cfg.entity_a !== "";
+  const hasB = cfg.entity_b !== undefined && cfg.entity_b !== null && cfg.entity_b !== "";
+  if (cfg.control_mode !== undefined && cfg.control_mode !== "single" && cfg.control_mode !== "linked") {
+    throw new Error('control_mode must be "single" or "linked".');
+  }
+  if (!hasA && !hasB) {
+    if (cfg.control_mode === "linked") throw new Error("control_mode: linked needs both entity_a and entity_b.");
+    return false;
+  }
+  if (!hasA || !hasB) throw new Error("Dual-bed config needs both entity_a and entity_b.");
+  for (const k of ["entity_a", "entity_b"]) {
+    if (typeof cfg[k] !== "string" || !/^[a-z_]+\.[a-z0-9_]+$/.test(cfg[k])) {
+      throw new Error(`${k} must be an entity id like cover.my_bed_head.`);
+    }
+  }
+  if (cfg.entity_a === cfg.entity_b) throw new Error("entity_a and entity_b must be two different entities.");
+  if (cfg.device || cfg.prefix || cfg.entities) {
+    throw new Error("entity_a/entity_b cannot be combined with device, prefix or entities.");
+  }
+  return true;
+};
+
+// Dual config: build the entity map of one bed from any one of its entities.
+// Siblings come from the same device, else from the object id prefix.
+const resolveBedFromEntity = (id, reg) => {
+  const dev = reg && reg[id] && reg[id].device_id;
+  const onDevice = dev ? Object.keys(reg).filter((e) => reg[e].device_id === dev) : [];
+  const objectId = id.split(/\.(.+)/)[1];
+  const known = Object.values(MATCHERS).map((m) => `_${m.suffix}`).find((x) => objectId.endsWith(x));
+  const prefix = known ? objectId.slice(0, -known.length) : null;
+  const ent = {};
+  for (const key of Object.keys(MATCHERS)) {
+    const m = MATCHERS[key];
+    ent[key] = (matchEntity(key, id) && id) || onDevice.find((e) => matchEntity(key, e)) ||
+      (prefix ? `${m.domain}.${prefix}_${m.suffix}` : "");
+  }
+  return ent;
+};
+
 const matchEntity = (key, entityId) => {
   const m = MATCHERS[key];
   const [domain, objectId] = String(entityId).split(/\.(.+)/);
@@ -50,7 +100,8 @@ const matchEntity = (key, entityId) => {
 // card config or the Home Assistant user language (falls back to English).
 const STRINGS = {
   da: {
-    bed: "Seng", back: "Ryg", legs: "Ben", both: "Begge", up: "op", down: "ned",
+    bed: "Seng", single: "Enkelt", linked: "Sammen", bedA: "Seng A", bedB: "Seng B", controlMode: "Styring", activeBed: "Aktiv seng",
+    back: "Ryg", legs: "Ben", both: "Begge", up: "op", down: "ned",
     stop: "Stop", light: "Lys", lightOn: "Lys tændt", lightOff: "Lys slukket",
     connected: "Forbundet", notConnected: "Ikke forbundet", noResponse: "Svarer ikke",
     btNoResponse: "Bluetooth svarer ikke", flat: "Flad",
@@ -71,7 +122,8 @@ const STRINGS = {
     },
   },
   en: {
-    bed: "Bed", back: "Back", legs: "Legs", both: "Both", up: "up", down: "down",
+    bed: "Bed", single: "Single", linked: "Linked", bedA: "Bed A", bedB: "Bed B", controlMode: "Control mode", activeBed: "Active bed",
+    back: "Back", legs: "Legs", both: "Both", up: "up", down: "down",
     stop: "Stop", light: "Light", lightOn: "Light on", lightOff: "Light off",
     connected: "Connected", notConnected: "Not connected", noResponse: "Not responding",
     btNoResponse: "Bluetooth not responding", flat: "Flat",
@@ -116,12 +168,16 @@ const ICONS = {
 class LinakBedCard extends HTMLElement {
   setConfig(config) {
     if (!config) throw new Error("Invalid configuration");
+    const dual = validateDual(config);
     // Home Assistant may call setConfig again with the same config;
     // only rebuild when it actually changed (avoids flicker).
     const cfgKey = JSON.stringify(config);
     if (this._cfgKey === cfgKey && this._built) return;
     this._cfgKey = cfgKey;
     this._config = config;
+    this._dual = dual;
+    this._linked = dual && config.control_mode === "linked";
+    this._active = 0;
     this._entKey = null;
     this._regRef = null;
     this._last = null;
@@ -167,6 +223,18 @@ class LinakBedCard extends HTMLElement {
     if (reg === this._regRef && this._ent) return;
     this._regRef = reg;
 
+    if (this._dual) {
+      const beds = [cfg.entity_a, cfg.entity_b].map((id) => resolveBedFromEntity(id, reg));
+      const k = JSON.stringify(beds);
+      if (k !== this._entKey) {
+        this._entKey = k;
+        this._beds = beds;
+        this._last = null;
+      }
+      this._ent = beds[this._active];
+      return;
+    }
+
     const ent = {};
     const onDevice = cfg.device && reg
       ? Object.keys(reg).filter((id) => reg[id].device_id === cfg.device)
@@ -182,12 +250,13 @@ class LinakBedCard extends HTMLElement {
     if (key !== this._entKey) {
       this._entKey = key;
       this._ent = ent;
+      this._beds = [ent];
       this._last = null;
     }
   }
 
   _configured() {
-    return Object.values(this._ent || {}).some((id) => id && this._hass.states[id]);
+    return (this._beds || [this._ent || {}]).some((b) => Object.values(b).some((id) => id && this._hass.states[id]));
   }
 
   // loading -> HA not ready; incomplete -> nothing chosen yet;
@@ -196,7 +265,7 @@ class LinakBedCard extends HTMLElement {
     const h = this._hass;
     if (!h || !h.states || !Object.keys(h.states).length) return "loading";
     const c = this._config || {};
-    if (!c.device && !c.prefix && !(c.entities && Object.values(c.entities).some(Boolean))) return "incomplete";
+    if (!this._dual && !c.device && !c.prefix && !(c.entities && Object.values(c.entities).some(Boolean))) return "incomplete";
     return this._configured() ? "full" : "notfound";
   }
 
@@ -227,10 +296,40 @@ class LinakBedCard extends HTMLElement {
     const v = s ? parseFloat(s.state) : NaN;
     return isNaN(v) ? 0 : v;
   }
+  // Beds a command goes to: the active bed (single mode) or both (linked mode).
+  _targets() {
+    const beds = this._beds || [this._ent];
+    return this._linked ? beds : [beds[this._active] || beds[0]];
+  }
+  _bedOk(bed, key) {
+    const s = bed[key] && this._hass.states[bed[key]];
+    return !!s && s.state !== "unavailable";
+  }
+  // Controls are usable only if every targeted bed can handle them
+  _ctrlOk(key) {
+    return this._targets().every((b) => this._bedOk(b, key));
+  }
+  // Send one command to every targeted bed at once (no awaiting between them).
+  // Stop is always sent to all targets, even if the entity looks unavailable.
   _call(domain, service, key, extra = {}) {
-    if (!this._hass || !this._ent[key] || this._avail(key) !== "ok") return;
-    this._hass.callService(domain, service, { entity_id: this._ent[key], ...extra });
+    if (!this._hass) return;
+    const isStop = key === "stop" || service === "stop_cover";
+    const ids = this._targets()
+      .filter((b) => b[key] && (isStop || this._bedOk(b, key)))
+      .map((b) => b[key]);
+    if (!ids.length) return;
+    ids.forEach((id) => {
+      const r = this._hass.callService(domain, service, { entity_id: id, ...extra });
+      if (r && r.catch) r.catch((err) => console.warn(`linak-bed-card: ${service} failed for ${id}`, err));
+    });
     if (navigator.vibrate) navigator.vibrate(15);
+  }
+  _setControl(linked, active) {
+    this._linked = linked;
+    this._active = active;
+    this._ent = this._beds[active];
+    this._last = null;
+    this._update();
   }
   _icon(d) {
     return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${d}"/></svg>`;
@@ -264,6 +363,17 @@ class LinakBedCard extends HTMLElement {
           </header>
 
           <div class="notice" id="notice" role="status" hidden></div>
+
+          ${this._dual ? `<div class="modes">
+            <div class="seg2" role="group" aria-label="${this._esc(this._t("controlMode"))}">
+              <button data-mode="single">${this._esc(this._t("single"))}</button>
+              <button data-mode="linked">${this._esc(this._t("linked"))}</button>
+            </div>
+            <div class="seg2" id="beds" role="group" aria-label="${this._esc(this._t("activeBed"))}">
+              <button data-bed="0">${this._esc(this._config.name_a || this._t("bedA"))}</button>
+              <button data-bed="1">${this._esc(this._config.name_b || this._t("bedB"))}</button>
+            </div>
+          </div>` : ""}
 
           <div class="stage">
             <div class="glow" id="glowEl"></div>
@@ -320,6 +430,12 @@ class LinakBedCard extends HTMLElement {
       bottom: $("#bottom"), card: $("ha-card"),
     };
 
+    this.shadowRoot.querySelectorAll("[data-mode]").forEach((b) =>
+      b.addEventListener("click", () => this._setControl(b.dataset.mode === "linked", this._active))
+    );
+    this.shadowRoot.querySelectorAll("[data-bed]").forEach((b) =>
+      b.addEventListener("click", () => this._setControl(false, Number(b.dataset.bed)))
+    );
     this.shadowRoot.querySelectorAll("[data-act]").forEach((b) =>
       b.addEventListener("click", () => {
         const [sec, act] = b.dataset.act.split(":");
@@ -382,7 +498,7 @@ class LinakBedCard extends HTMLElement {
     // Home Assistant calls `hass` on every state change in the whole system.
     // Skip the redraw unless one of this card's entities actually changed.
     const sel = this._st("preset");
-    const sig = Object.values(this._ent)
+    const sig = (this._linked ? "L" : "S") + this._active + "|" + this._beds.flatMap((b) => Object.values(b))
       .map((id) => {
         const s = id && this._hass.states[id];
         return s ? s.state : "";
@@ -420,15 +536,20 @@ class LinakBedCard extends HTMLElement {
     e.notice.textContent = notes.join(" ");
     e.notice.hidden = !notes.length;
 
-    this.shadowRoot.querySelectorAll("[data-act]").forEach((b) => {
-      b.disabled = this._avail(`${b.dataset.act.split(":")[0]}_cover`) !== "ok";
+    this.shadowRoot.querySelectorAll("[data-mode]").forEach((b) =>
+      b.classList.toggle("on", (b.dataset.mode === "linked") === this._linked));
+    this.shadowRoot.querySelectorAll("[data-bed]").forEach((b) => {
+      b.classList.toggle("on", !this._linked && Number(b.dataset.bed) === this._active);
     });
-    e.stopall.disabled = this._avail("stop") !== "ok";
+    this.shadowRoot.querySelectorAll("[data-act]").forEach((b) => {
+      b.disabled = !this._ctrlOk(`${b.dataset.act.split(":")[0]}_cover`);
+    });
+    e.stopall.disabled = !this._targets().some((b) => b.stop && this._hass.states[b.stop]);
 
     const light = this._st("light");
     const lightOn = !!light && light.state === "on";
     e.light.hidden = this._avail("light") === "missing";
-    e.light.disabled = this._avail("light") !== "ok";
+    e.light.disabled = !this._ctrlOk("light");
     e.bottom.classList.toggle("nolight", e.light.hidden);
     e.glow.classList.toggle("on", lightOn);
     e.light.classList.toggle("on", lightOn);
@@ -445,7 +566,7 @@ class LinakBedCard extends HTMLElement {
     }
 
     e.presets.hidden = this._avail("preset") === "missing" && !this._config.presets;
-    const presetOk = this._avail("preset") === "ok";
+    const presetOk = this._ctrlOk("preset");
     const cur = sel && sel.state !== "unavailable" && sel.state !== "unknown" ? sel.state : null;
     e.presets.querySelectorAll(".preset").forEach((b) => {
       const active = b.dataset.p === cur;
@@ -542,6 +663,11 @@ LinakBedCard.styles = `
   .btn:hover:not(:disabled) { background: color-mix(in srgb, var(--bed-accent) 22%, transparent); color: var(--bed-accent); }
   button:active:not(:disabled) { transform: scale(.94); }
 
+  .modes { display: flex; flex-wrap: wrap; gap: 8px; }
+  .seg2 { display: inline-flex; border-radius: 999px; background: var(--bed-surface); padding: 2px; }
+  .seg2 button { padding: 5px 12px; border-radius: 999px; font-size: .8rem; font-weight: 600;
+                 background: transparent; color: var(--secondary-text-color); }
+  .seg2 button.on { background: var(--bed-accent); color: var(--bed-on-accent); }
   .presets { display: grid; grid-template-columns: repeat(auto-fit, minmax(70px, 1fr)); gap: 8px; }
   .preset { padding: 9px 6px; border-radius: 12px; font-size: .85rem; font-weight: 600;
             background: var(--bed-surface); color: var(--primary-text-color); transition: all .2s; }
